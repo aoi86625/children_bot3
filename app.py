@@ -1,5 +1,6 @@
 import os
 import io
+import base64
 import openai
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
@@ -16,12 +17,19 @@ LINE_CHANNEL_SECRET = os.getenv('LINE_CHANNEL_SECRET')
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-# Vision APIクライアント（認証キー指定）
-os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = 'sql-book-379215-1b6cb645d532.json'
-vision_client = vision.ImageAnnotatorClient()
-
 # OpenAI APIキー
 openai.api_key = os.getenv("OPENAI_API_KEY")
+
+# 🔥【追加】base64からVision認証キーを復元
+encoded_key = os.getenv('GOOGLE_CREDENTIALS_BASE64')
+if encoded_key:
+    decoded_key = base64.b64decode(encoded_key)
+    with open('service_account.json', 'wb') as f:
+        f.write(decoded_key)
+    os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = 'service_account.json'
+
+# Vision APIクライアント
+vision_client = vision.ImageAnnotatorClient()
 
 # OpenAI呼び出し関数
 def call_openai_for_printer_text(ocr_text):
