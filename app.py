@@ -9,7 +9,7 @@ from google.cloud import vision
 
 app = Flask(__name__)
 
-# LINE用設定
+# LINE設定
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv('LINE_CHANNEL_ACCESS_TOKEN')
 LINE_CHANNEL_SECRET = os.getenv('LINE_CHANNEL_SECRET')
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
@@ -18,11 +18,13 @@ handler = WebhookHandler(LINE_CHANNEL_SECRET)
 # Google Vision設定
 credentials_base64 = os.getenv('GOOGLE_APPLICATION_CREDENTIALS_BASE64')
 credentials_json_path = "service_account.json"
+vision_client = None
+
 if credentials_base64:
     with open(credentials_json_path, "wb") as f:
         f.write(base64.b64decode(credentials_base64))
-os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = credentials_json_path
-vision_client = vision.ImageAnnotatorClient()
+    os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = credentials_json_path
+    vision_client = vision.ImageAnnotatorClient()
 
 # OpenAI設定
 openai.api_key = os.getenv('OPENAI_API_KEY')
@@ -45,6 +47,13 @@ def handle_image_message(event):
     # LINEから画像取得
     message_content = line_bot_api.get_message_content(event.message.id)
     image_bytes = io.BytesIO(message_content.content)
+
+    if vision_client is None:
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(text="OCR設定が正しく行われていません。")
+        )
+        return
 
     # Vision APIでOCR
     image = vision.Image(content=image_bytes.getvalue())
