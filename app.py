@@ -82,12 +82,12 @@ OCRで拾取したテキストを、子供向けの「持ち物リスト」と�
 """
 
     # OpenAI API呼び出し
-    timetable_response = openai.chat.completions.create(
+    timetable_response = openai.ChatCompletion.create(
         model="gpt-3.5-turbo",
         messages=[{"role": "user", "content": timetable_prompt}]
     )
 
-    belongings_response = openai.chat.completions.create(
+    belongings_response = openai.ChatCompletion.create(
         model="gpt-3.5-turbo",
         messages=[{"role": "user", "content": belongings_prompt}]
     )
