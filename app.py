@@ -3,31 +3,32 @@ from linebot import LineBotApi, WebhookHandler
 from linebot.models import MessageEvent, TextMessage, TextSendMessage, ImageMessage
 import os
 import io
-import openai
 import base64
+import openai
 from google.cloud import vision
+from usage_counter import can_use_api, increment_usage
 
+# Flaskアプリ
 app = Flask(__name__)
 
-# LINE設定
+# LINEの環境変数
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv('LINE_CHANNEL_ACCESS_TOKEN')
 LINE_CHANNEL_SECRET = os.getenv('LINE_CHANNEL_SECRET')
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-# Google Vision設定
-credentials_base64 = os.getenv('GOOGLE_APPLICATION_CREDENTIALS_BASE64')
-credentials_json_path = "service_account.json"
-vision_client = None
+# OpenAI APIキー
+openai.api_key = os.getenv("OPENAI_API_KEY")
 
-if credentials_base64:
-    with open(credentials_json_path, "wb") as f:
-        f.write(base64.b64decode(credentials_base64))
-    os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = credentials_json_path
-    vision_client = vision.ImageAnnotatorClient()
+# Vision APIクレデンシャルの設定（Base64経由）
+encoded_key = os.getenv("GOOGLE_CREDENTIALS_BASE64")
+if encoded_key:
+    decoded_key = base64.b64decode(encoded_key).decode()
+    with open("service_account.json", "w") as f:
+        f.write(decoded_key)
+    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "service_account.json"
 
-# OpenAI設定
-openai.api_key = os.getenv('OPENAI_API_KEY')
+vision_client = vision.ImageAnnotatorClient()
 
 @app.route("/callback", methods=['POST'])
 def callback():
@@ -42,60 +43,66 @@ def callback():
 
     return 'OK'
 
+@handler.add(MessageEvent, message=TextMessage)
+def handle_text_message(event):
+    line_bot_api.reply_message(
+        event.reply_token,
+        TextSendMessage(text=event.message.text)
+    )
+
 @handler.add(MessageEvent, message=ImageMessage)
 def handle_image_message(event):
-    # LINEから画像取得
+    if not can_use_api():
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(text="⚠️ GPTの利用回数が本日の上限（10回）に達しました。明日またご利用ください。")
+        )
+        return
+
+    # 画像取得
     message_content = line_bot_api.get_message_content(event.message.id)
     image_bytes = io.BytesIO(message_content.content)
 
-    if vision_client is None:
+    # OCR処理
+    image = vision.Image(content=image_bytes.getvalue())
+    response = vision_client.text_detection(image=image)
+    texts = response.text_annotations
+
+    if not texts:
         line_bot_api.reply_message(
             event.reply_token,
             TextSendMessage(text="OCR設定が正しく行われていません。")
         )
         return
 
-    # Vision APIでOCR
-    image = vision.Image(content=image_bytes.getvalue())
-    response = vision_client.text_detection(image=image)
-    texts = response.text_annotations
-    if not texts:
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="画像から文字が検出できませんでした。"))
-        return
-
     ocr_text = texts[0].description.strip()
-    print("OCR結果:", ocr_text)
 
-    # セクション分割用プロンプト
-    section_split_prompt = f"""
-あなたはプリントのテキストを整理するアシスタントです。
-以下のOCRで取得したテキストを、内容ごとに「自然なセクション」に分割してください。
-- 目安となる区切りは「見出し・大きな改行・段落の切れ目」です。
-- セクションは「表形式」「リスト形式」「文章形式」のいずれかに分類できる単位にしてください。
-- それぞれのセクションに「仮タイトル」をつけてください。（例：「時間割」「持ち物」「行事予定」など）
-- セクションの区切りは「---」で表現してください。
-
-# 入力テキスト
-{ocr_text}
-    """
-
+    # OpenAIに送信
     try:
-        section_response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
-            messages=[{"role": "user", "content": section_split_prompt}]
+        response = openai.ChatCompletion.create(
+            model="gpt-4o",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "あなたは学校プリントのOCR結果を理解し、情報構造ごとにセクションを分類・抽出するAIです。表、リスト、テキストなどを見分け、用途ごとに使えるようにJSON形式で返してください。"
+                },
+                {
+                    "role": "user",
+                    "content": ocr_text
+                }
+            ],
+            temperature=0.3,
         )
-        sections_text = section_response.choices[0].message.content
+        increment_usage()
+        answer = response.choices[0].message.content.strip()
     except Exception as e:
-        print("OpenAI APIリクエストエラー:", e)
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="エラーが発生しました。後でもう一度試してください。"))
-        return
+        answer = f"OpenAI APIリクエストエラー: {e}"
 
-    # 応答（仮） - 分割されたセクションをそのまま返す
     line_bot_api.reply_message(
         event.reply_token,
-        TextSendMessage(text=f"セクション分割結果:\n{sections_text[:4000]}")
+        TextSendMessage(text=answer)
     )
 
 if __name__ == "__main__":
-    port = int(os.environ.get('PORT', 5000))
+    port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
